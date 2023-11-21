@@ -20,8 +20,10 @@ function App() {
     let img;
 
     //useEffect for loading the model and warming it up...
+    // https://raw.githubusercontent.com/holubchykov/docs_detection/main/model.json
+    // https://cdn.jsdelivr.net/gh/nirchetrit/IdPassportDetection@latest/src/model/model.json
     useEffect(() => {
-        tf.loadGraphModel("https://cdn.jsdelivr.net/gh/nirchetrit/IdPassportDetection@latest/src/model/model.json").then(model => {
+        tf.loadGraphModel("https://raw.githubusercontent.com/holubchykov/docs_detection/main/model.json").then(model => {
             setModel(model);
             console.log('loaded the model');
             console.log('warming up..');
