@@ -118,6 +118,73 @@ function nonMaxSuppression(boxes, iouThreshold = 0.5, scoreThreshold = 0.3) {
 }
 
 /**
+ * Create a merged bounding box from two high-confidence detections
+ * @param {Array<number>} box1 - First bounding box [x1, y1, x2, y2]
+ * @param {Array<number>} box2 - Second bounding box [x1, y1, x2, y2]
+ * @returns {Array<number>} Merged bounding box [x1, y1, x2, y2]
+ */
+function createMergedBoundingBox(box1, box2) {
+  // Determine which box is on the left and which is on the right
+  const leftBox = box1[0] <= box2[0] ? box1 : box2;
+  const rightBox = box1[0] <= box2[0] ? box2 : box1;
+  
+  // Take leftmost x-coordinate from left box and rightmost x-coordinate from right box
+  const x1 = leftBox[0];
+  const x2 = rightBox[2];
+  
+  // For y-coordinates, take the full span from top to bottom across the combined width
+  const y1 = Math.min(box1[1], box2[1]);
+  const y2 = Math.max(box1[3], box2[3]);
+  
+  return [x1, y1, x2, y2];
+}
+
+/**
+ * Crop and capture a bounding box area from the source element
+ * @param {HTMLVideoElement|HTMLImageElement} sourceEl - Source element
+ * @param {HTMLCanvasElement} canvasEl - Canvas element
+ * @param {Array<number>} boundingBox - Bounding box [x1, y1, x2, y2]
+ * @param {number} origW - Original source width
+ * @param {number} origH - Original source height
+ * @param {string} debugText - Debug text to display
+ * @param {Function} callback - Callback function
+ * @returns {boolean} True if capture was successful
+ */
+function cropAndCapture(sourceEl, canvasEl, boundingBox, origW, origH, debugText, callback) {
+  const [x1, y1, x2, y2] = boundingBox;
+  const boxW = x2 - x1;
+  const boxH = y2 - y1;
+  const areaRatio = (boxW * boxH) / (origW * origH);
+
+  if (areaRatio >= 0.5) {
+    const scaleFactor = 1.2;
+    const newWidth = boxW * scaleFactor;
+    const newHeight = boxH * scaleFactor;
+
+    canvasEl.width = newWidth;
+    canvasEl.height = newHeight;
+    canvasEl.style.width = `${newWidth}px`;
+    canvasEl.style.height = "auto";
+
+    const ctx = canvasEl.getContext("2d");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(sourceEl, x1, y1, boxW, boxH, 0, 0, newWidth, newHeight);
+    
+    ctx.fillStyle = "red";
+    ctx.font = "20px Arial";
+    ctx.fillText(`${debugText}: ${(areaRatio*100).toFixed(1)}%`, 10, 25);
+    
+    if (sourceEl.srcObject) {
+      sourceEl.srcObject.getTracks().forEach(t => t.stop());
+    }
+    callback(true);
+    return true;
+  }
+  return false;
+}
+
+/**
  * @param {HTMLImageElement|HTMLVideoElement} sourceEl - Source element (image or video)
  * @param {HTMLCanvasElement} canvasEl - Canvas element to draw results
  * @param {Function} callback - Callback function with highConfidence boolean parameter
@@ -224,42 +291,57 @@ export async function detect(sourceEl, canvasEl, callback = () => {}) {
     
     ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
 
-    // Find high confidence detection
+    // Check for two high confidence detections (>0.95)
+    const highConfidenceBoxes = finalBoxes
+      .map((box, index) => ({ box, score: finalScores[index], index }))
+      .filter(item => item.score >= 0.95);
+    
+    if (highConfidenceBoxes.length >= 2) {
+      // Use the two highest confidence boxes
+      const [firstBox, secondBox] = highConfidenceBoxes
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 2);
+      
+      const mergedBox = createMergedBoundingBox(firstBox.box, secondBox.box);
+      const debugText = `Merged Doc (${firstBox.score.toFixed(3)}, ${secondBox.score.toFixed(3)})`;
+      
+      if (cropAndCapture(sourceEl, canvasEl, mergedBox, origW, origH, debugText, callback)) {
+        return;
+      }
+    }
+
     const idxHigh = finalScores.findIndex(s => s >= 0.95);
     if (idxHigh >= 0) {
-      const [x1, y1, x2, y2] = finalBoxes[idxHigh];
-      const boxW = x2 - x1, boxH = y2 - y1;
-      const areaRatio = (boxW * boxH) / (origW * origH);
-
-      if (areaRatio >= 0.5) {
-        const scaleFactor = 1.2;
-        const newWidth = boxW * scaleFactor;
-        const newHeight = boxH * scaleFactor;
-
-        canvasEl.width = newWidth;
-        canvasEl.height = newHeight;
-        canvasEl.style.width = `${newWidth}px`;
-        canvasEl.style.height = "auto";
-
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(sourceEl, x1, y1, boxW, boxH, 0, 0, newWidth, newHeight);
-        
-        ctx.fillStyle = "red";
-        ctx.font = "20px Arial";
-        ctx.fillText(`Doc: ${(areaRatio*100).toFixed(1)}%`, 10, 25);
-        
-        if (sourceEl.srcObject) {
-          sourceEl.srcObject.getTracks().forEach(t => t.stop());
-        }
-        callback(true);
+      const boundingBox = finalBoxes[idxHigh];
+      const debugText = "Doc";
+      
+      if (cropAndCapture(sourceEl, canvasEl, boundingBox, origW, origH, debugText, callback)) {
         return;
       }
     }
 
     renderBoxes(canvasEl, finalBoxes, finalScores, finalClasses, [xScale, yScale]);
     
-    if (idxHigh >= 0) {
+    // Add debug info for two high-confidence boxes that didn't trigger capture
+    if (highConfidenceBoxes.length >= 2) {
+      const [firstBox, secondBox] = highConfidenceBoxes
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 2);
+      
+      const mergedBox = createMergedBoundingBox(firstBox.box, secondBox.box);
+      const [x1, y1, x2, y2] = mergedBox;
+      const areaRatio = ((x2 - x1) * (y2 - y1)) / (origW * origH);
+      
+      ctx.fillStyle = "blue";
+      ctx.font = "20px Arial";
+      ctx.fillText(`Merged: ${(areaRatio*100).toFixed(1)}%`, 10, 25);
+      ctx.fillText(`Scores: ${firstBox.score.toFixed(3)}, ${secondBox.score.toFixed(3)}`, 10, 50);
+      
+      // Draw the merged bounding box outline
+      ctx.strokeStyle = "blue";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    } else if (idxHigh >= 0) {
       const [x1, y1, x2, y2] = finalBoxes[idxHigh];
       const areaRatio = ((x2 - x1) * (y2 - y1)) / (origW * origH);
       ctx.fillStyle = "red";
